@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 )
@@ -9,6 +10,10 @@ import (
 type SubsetError struct {
 	path    []string
 	message string
+}
+
+type SubsetLengthError struct {
+	SubsetError
 }
 
 // AppendPath appends key to the existing struct path. For example, in struct member `a.Key1.Key2`, the path would be ["Key1", "Key2"]
@@ -49,14 +54,15 @@ func IsSubset(expected, actual interface{}) error {
 
 	switch reflect.TypeOf(expected).Kind() {
 	case reflect.Slice:
-		if reflect.ValueOf(expected).Len() != reflect.ValueOf(actual).Len() {
-			return &SubsetError{
-				message: fmt.Sprintf("slice length mismatch: %d != %d", reflect.ValueOf(expected).Len(), reflect.ValueOf(actual).Len()),
+		relaxed := true
+		if relaxed {
+			err := isSubsetListRelaxed(expected, actual)
+			if err != nil {
+				return err
 			}
-		}
-
-		for i := 0; i < reflect.ValueOf(expected).Len(); i++ {
-			if err := IsSubset(reflect.ValueOf(expected).Index(i).Interface(), reflect.ValueOf(actual).Index(i).Interface()); err != nil {
+		} else {
+			err := isSubsetListStrict(expected, actual)
+			if err != nil {
 				return err
 			}
 		}
@@ -88,5 +94,61 @@ func IsSubset(expected, actual interface{}) error {
 		}
 	}
 
+	return nil
+}
+
+func isSubsetListStrict(expected interface{}, actual interface{}) error {
+	if reflect.ValueOf(expected).Len() != reflect.ValueOf(actual).Len() {
+		return &SubsetError{
+			message: fmt.Sprintf("slice length mismatch: %d != %d", reflect.ValueOf(expected).Len(), reflect.ValueOf(actual).Len()),
+		}
+	}
+
+	for i := 0; i < reflect.ValueOf(expected).Len(); i++ {
+		if err := IsSubset(reflect.ValueOf(expected).Index(i).Interface(), reflect.ValueOf(actual).Index(i).Interface()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isSubsetListRelaxed(expected interface{}, actual interface{}) error {
+	expectedLen := reflect.ValueOf(expected).Len()
+	actualLen := reflect.ValueOf(actual).Len()
+
+	if expectedLen > actualLen {
+		return &SubsetLengthError{
+			SubsetError{
+				message: fmt.Sprintf("expected length longer than actual: %d > %d", expectedLen, actualLen),
+			},
+		}
+	}
+
+	for i := 0; i < expectedLen; i++ {
+		e := reflect.ValueOf(expected).Index(i).Interface()
+		found := false
+
+		for j := 0; j < actualLen; j++ {
+			err := IsSubset(e, reflect.ValueOf(actual).Index(j).Interface())
+
+			if err == nil {
+				found = true
+			}
+
+			var e *SubsetLengthError
+			if errors.As(err, &e) {
+				return err
+			}
+		}
+
+		if found {
+			// TBD remove element from actual slice to reduce complexity from O(MN) to O(M * logN)?
+			continue
+		}
+
+		return &SubsetError{
+			message: fmt.Sprintf("expected list element \n\n%#v\n\n not found in actual values list", e),
+		}
+	}
 	return nil
 }
